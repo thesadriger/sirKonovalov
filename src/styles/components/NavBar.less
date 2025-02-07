@@ -1,0 +1,124 @@
+.nav-menu {
+  transition: background-color 0.3s var(--ease-in-out);
+  
+  .ant-menu-item {
+    height: 80px;
+    line-height: 80px;
+    padding: 0 20px;
+  }
+  
+  &.light {
+    --nav-text: var(--primary-color);
+    --nav-hover: var(--text-color);
+    --nav-active: var(--primary-color);
+    --nav-bg-hover: rgba(0, 0, 0, 0.04);
+  }
+  
+  &.dark {
+    --nav-text: var(--text-color);
+    --nav-hover: #fff;
+    --nav-active: #fff;
+    --nav-bg-hover: var(--hover-bg);
+  }
+  
+  &::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      var(--border-color),
+      transparent
+    );
+    opacity: 0.5;
+  }
+  
+  .nav-item {
+    color: var(--nav-text);
+    transition: var(--theme-transition);
+    
+    a {
+      color: var(--nav-text);
+      
+      &:hover {
+        color: var(--nav-hover);
+      }
+    }
+    
+    &:hover {
+      color: var(--nav-hover);
+      background: var(--nav-bg-hover);
+    }
+    
+    &.ant-menu-item-selected {
+      color: var(--nav-active);
+      
+      &::after {
+        display: none;
+      }
+    }
+    
+    &::after {
+      display: none;
+    }
+    
+    &.theme-toggle {
+      font-size: 1.2rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+  }
+}
+
+@media (max-width: 768px) {
+  .nav-menu {
+    .nav-item {
+      font-size: 0.9rem !important;
+      padding: 0 8px !important;
+    }
+    
+    .ant-menu-item-disabled {
+      padding: 0 !important;
+    }
+    
+    .theme-toggle {
+      margin-left: 0 !important;
+    }
+  }
+}
+
+@media (max-width: 480px) {
+  .nav-menu {
+    padding: 0 0.3rem !important;
+    
+    .nav-item {
+      font-size: 0.8rem !important;
+      padding: 0 5px !important;
+    }
+    
+    img {
+      height: 35px !important;
+    }
+  }
+}
+
+.desktop-text {
+  display: inline;
+  
+  @media (max-width: @screen-sm) {
+    display: none;
+  }
+}
+
+.mobile-text {
+  display: none;
+  
+  @media (max-width: @screen-sm) {
+    display: inline;
+  }
+} 

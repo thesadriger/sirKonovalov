@@ -1,0 +1,25 @@
+// Скрываем стандартный курсор
+* {
+  cursor: none !important;
+  
+  &::-moz-selection {
+    background: @primary-color;
+    color: #fff;
+  }
+  
+  &::selection {
+    background: @primary-color;
+    color: #fff;
+  }
+}
+
+// Поддержка мобильных устройств
+@media (max-width: 768px) {
+  .custom-cursor {
+    display: none;
+  }
+  
+  * {
+    cursor: auto !important;
+  }
+} 

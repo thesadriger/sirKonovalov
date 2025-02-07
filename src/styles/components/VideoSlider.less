@@ -1,0 +1,50 @@
+// Добавляем адаптивные стили
+.video-slider {
+  &-overlay {
+    @media (max-width: @screen-sm) {
+      padding: 1rem;
+      background: linear-gradient(
+        180deg,
+        rgba(0,0,0,0.6) 0%,
+        rgba(0,0,0,0.4) 50%,
+        rgba(0,0,0,0.2) 100%
+      );
+    }
+  }
+
+  &-content {
+    @media (max-width: @screen-sm) {
+      h1 {
+        font-size: 2rem !important;
+        margin-bottom: 0.5rem;
+      }
+      
+      p {
+        font-size: 1rem !important;
+        max-width: 90% !important;
+      }
+    }
+
+    @media (max-width: 480px) {
+      h1 {
+        font-size: 1.5rem !important;
+      }
+      
+      p {
+        font-size: 0.9rem !important;
+      }
+    }
+  }
+
+  &-controls {
+    @media (max-width: @screen-sm) {
+      bottom: 1rem;
+      right: 1rem;
+      
+      button {
+        width: 35px;
+        height: 35px;
+      }
+    }
+  }
+} 

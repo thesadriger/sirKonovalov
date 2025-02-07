@@ -1,0 +1,191 @@
+// Ант Дизайн основные переменные
+@primary-color: #1a1a1a;        // Меняем главный цвет
+@text-color: rgba(0,0,0,0.85);
+@heading-color: #000;
+@border-color-base: #e8e8e8;
+
+// Типографика
+@font-family: 'Neue Haas Grotesk Display Pro', -apple-system, sans-serif;
+@font-size-base: 16px;         // Базовый размер шрифта
+@typography-title-margin-bottom: 1.2em;
+
+// Границы и скругления
+@border-radius-base: 0;
+@border-width-base: 1px;
+
+// Кнопки
+@btn-font-weight: 500;
+@btn-border-radius-base: 0;
+@btn-default-color: #000;
+@btn-default-border: #000;
+@btn-primary-bg: transparent;
+@btn-primary-color: #000;
+@btn-height-lg: 48px;
+@btn-padding-horizontal-lg: 32px;
+
+// Меню
+@menu-item-color: #000;
+@menu-highlight-color: #000;
+@menu-item-active-bg: transparent;
+@menu-item-active-border-width: 0;
+@menu-item-group-title-color: #000;
+
+// Анимации
+@animation-duration-base: 0.3s;
+@animation-duration-slow: 0.5s;
+
+// Кривые анимации
+@ease-base-out: cubic-bezier(0.7, 0.3, 0.1, 1);
+@ease-base-in: cubic-bezier(0.9, 0, 0.3, 0.7);
+@ease-out: cubic-bezier(0.215, 0.61, 0.355, 1);
+@ease-in: cubic-bezier(0.55, 0.055, 0.675, 0.19);
+@ease-in-out: cubic-bezier(0.645, 0.045, 0.355, 1);
+@ease-out-back: cubic-bezier(0.12, 0.4, 0.29, 1.46);
+@ease-in-back: cubic-bezier(0.71, -0.46, 0.88, 0.6);
+@ease-in-out-back: cubic-bezier(0.71, -0.46, 0.29, 1.46);
+@ease-out-circ: cubic-bezier(0.08, 0.82, 0.17, 1);
+@ease-in-circ: cubic-bezier(0.6, 0.04, 0.98, 0.34);
+@ease-in-out-circ: cubic-bezier(0.78, 0.14, 0.15, 0.86);
+@ease-out-quint: cubic-bezier(0.23, 1, 0.32, 1);
+@ease-in-quint: cubic-bezier(0.755, 0.05, 0.855, 0.06);
+@ease-in-out-quint: cubic-bezier(0.86, 0, 0.07, 1);
+
+// Медиа-запросы
+@screen-xs: 480px;
+@screen-sm: 576px;
+@screen-md: 768px;
+@screen-lg: 992px;
+@screen-xl: 1200px;
+@screen-xxl: 1600px;
+
+// Дополнительные переменные
+@layout-header-height: 80px;
+@layout-header-padding: 1rem;
+@layout-footer-padding: 1rem;
+@layout-body-background: #fff;
+
+// Цвет ссылок (в компонентах типа <a>, <Button type="link"> и т.д.)
+@link-color: #b51a2c;
+
+// Можно усилить отступы между элементами формы:
+@form-item-margin-bottom: 24px;
+
+// Добавляйте любые другие переменные Ant Design: 
+
+// Миксины для эффектов
+.btn-hover-effect() {
+  position: relative;
+  overflow: hidden;
+  
+  &::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 0;
+    height: 0;
+    background: rgba(255,255,255,0.1);
+    border-radius: 50%;
+    transform: translate(-50%, -50%);
+    transition: width 0.3s ease, height 0.3s ease;
+  }
+  
+  &:hover::after {
+    width: 200%;
+    height: 200%;
+  }
+}
+
+.link-hover-effect() {
+  position: relative;
+  
+  &::after {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    width: 0;
+    height: 1px;
+    background: currentColor;
+    transition: width 0.3s @ease-in-out;
+  }
+  
+  &:hover::after {
+    width: 100%;
+  }
+}
+
+// Применение эффектов
+.ant-btn {
+  transition: all 0.3s @ease-in-out;
+  transform-origin: center;
+  
+  &:not(.ant-btn-link):not(.ant-btn-text) {
+    .btn-hover-effect();
+  }
+  
+  &:active {
+    transform: scale(0.98);
+  }
+}
+
+.ant-menu-item {
+  a {
+    .link-hover-effect();
+  }
+  
+  &:hover {
+    transform: translateY(-1px);
+  }
+  
+  &:active {
+    transform: translateY(0);
+  }
+}
+
+// Анимации для карточек
+.ant-card {
+  transition: transform 0.3s @ease-in-out, box-shadow 0.3s @ease-in-out;
+  
+  &-hoverable:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 14px 28px rgba(0,0,0,0.1);
+  }
+}
+
+// Анимации для форм
+.ant-input,
+.ant-select-selector {
+  transition: all 0.3s @ease-in-out;
+  
+  &:focus,
+  &:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+  }
+}
+
+// Анимации для модальных окон
+.ant-modal {
+  .ant-modal-content {
+    transform-origin: top;
+    animation: modalEnter 0.3s @ease-in-out;
+  }
+}
+
+@keyframes modalEnter {
+  from {
+    opacity: 0;
+    transform: scale(0.98) translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.ant-layout-content {
+  min-height: 80vh;
+  padding: 0;
+  margin-top: 0;
+} 

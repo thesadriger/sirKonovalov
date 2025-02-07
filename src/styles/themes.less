@@ -1,0 +1,117 @@
+:root {
+  // Light theme
+  --primary-color: #1a1a1a;
+  --text-color: rgba(0, 0, 0, 0.85);
+  --bg-color: #ffffff;
+  --secondary-bg: #f5f5f5;
+  --border-color: #e8e8e8;
+  --overlay-color: rgba(0, 0, 0, 0.5);
+  --footer-bg: #fafafa;
+  
+  // Transitions
+  --theme-transition: all 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+[data-theme='dark'] {
+  --primary-color: #f0f0f0;
+  --text-color: rgba(255, 255, 255, 0.95);
+  --bg-color: #1a1a1a;
+  --secondary-bg: #242424;
+  --border-color: #333333;
+  --overlay-color: rgba(255, 255, 255, 0.15);
+  --footer-bg: #1a1a1a;
+  
+  // Дополнительные цвета для тёмной темы
+  --hover-bg: rgba(255, 255, 255, 0.08);
+  --active-bg: rgba(255, 255, 255, 0.12);
+  --shadow-color: rgba(0, 0, 0, 0.3);
+}
+
+body {
+  background-color: var(--bg-color);
+  color: var(--text-color);
+  transition: var(--theme-transition);
+}
+
+// Глобальные переходы для компонентов
+.ant-layout,
+.ant-card,
+.ant-menu,
+.ant-btn,
+.ant-input,
+.ant-select,
+.ant-modal {
+  transition: var(--theme-transition);
+}
+
+// Специфичные стили для тёмной темы
+[data-theme='dark'] {
+  .ant-menu {
+    &-item:hover {
+      background-color: rgba(255, 255, 255, 0.08) !important;
+    }
+    
+    &-item-selected {
+      background-color: rgba(255, 255, 255, 0.12) !important;
+    }
+  }
+  
+  .ant-btn {
+    &:not(.ant-btn-primary):hover {
+      border-color: rgba(255, 255, 255, 0.85);
+      color: rgba(255, 255, 255, 0.85);
+    }
+  }
+  
+  .ant-card {
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    
+    &-hoverable:hover {
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+    }
+  }
+}
+
+.ant-layout {
+  background-color: var(--bg-color);
+}
+
+.ant-card {
+  background-color: var(--secondary-bg);
+  border-color: var(--border-color);
+  
+  .ant-card-meta-title {
+    color: var(--primary-color);
+  }
+  
+  .ant-card-meta-description {
+    color: var(--text-color);
+  }
+}
+
+.product-overlay {
+  background-color: var(--overlay-color);
+}
+
+// Анимации переключения темы
+.theme-transition-enter {
+  opacity: 0;
+  transform: scale(0.98);
+}
+
+.theme-transition-enter-active {
+  opacity: 1;
+  transform: scale(1);
+  transition: var(--theme-transition);
+}
+
+.theme-transition-exit {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.theme-transition-exit-active {
+  opacity: 0;
+  transform: scale(1.02);
+  transition: var(--theme-transition);
+} 

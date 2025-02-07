@@ -1,0 +1,2152 @@
+// ProductViewer.js
+import React, { Suspense, useMemo, useState, useEffect } from 'react';
+import { Canvas, useThree, useFrame } from '@react-three/fiber';
+import { OrbitControls, useGLTF, Html } from '@react-three/drei';
+import { EffectComposer, SMAA } from '@react-three/postprocessing';
+import * as THREE from 'three';
+import { preloadModels } from '../utils/modelPreloader';
+
+const FallbackMaterial = () => (
+  <meshStandardMaterial
+    attach="material"
+    color="#cccccc"
+    roughness={0.8}
+    metalness={0.2}
+  />
+);
+
+const Model = ({ url, onCreated }) => {
+  if (!url || typeof url !== 'string') {
+    console.error('Invalid model URL:', url);
+    return null;
+  }
+
+  const { scene } = useGLTF(url, {
+    useCache: true,
+    draco: {
+      enable: true,
+      decodeSpeed: 1.0,
+      encodeSpeed: 1.0,
+      quantizePosition: 14,
+      quantizeNormal: 10,
+      quantizeTexcoord: 12
+    }
+  });
+
+  const optimizedScene = useMemo(() => {
+    const box = new THREE.Box3().setFromObject(scene);
+    const center = box.getCenter(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3());
+    const maxDim = Math.max(size.x, size.y, size.z);
+    const scale = 10 / maxDim;
+    const verticalOffset = 0.2;
+    
+    scene.traverse((child) => {
+      if (child.isMesh) {
+        if (child.material?.isMaterial) {
+          const originalMat = child.material;
+          const material = new THREE.MeshStandardMaterial({
+            roughness: 0.5,
+            metalness: 0.2,
+            map: originalMat.map || null,
+            normalMap: originalMat.normalMap || null,
+            transparent: originalMat.transparent,
+            opacity: originalMat.opacity
+          });
+
+          if (material.map) {
+            material.map.encoding = THREE.sRGBEncoding;
+            material.map = material.map.clone();
+          }
+          
+          material.needsUpdate = true;
+          child.material = material;
+
+          child.material.encoding = THREE.sRGBEncoding;
+          
+          if (child.material.transparent) {
+            child.material.depthWrite = false;
+          }
+        } else {
+          console.warn('Invalid material detected, using fallback:', child);
+          child.material = new THREE.MeshStandardMaterial({
+            color: 0xff0000,
+            roughness: 0.8,
+            metalness: 0.2
+          });
+        }
+        
+        child.geometry.computeVertexNormals();
+        child.castShadow = true;
+        child.receiveShadow = true;
+      }
+    });
+    
+    scene.position.x = -center.x * scale;
+    scene.position.y = (-center.y * scale) + verticalOffset;
+    scene.position.z = -center.z * scale;
+    scene.scale.set(scale, scale, scale);
+
+    return scene;
+  }, [scene]);
+
+  useEffect(() => {
+    onCreated?.();
+  }, [onCreated]);
+
+  return <primitive object={optimizedScene} />;
+};
+
+const RenderOptimizer = () => {
+  const { gl } = useThree();
+  const [dpr, setDpr] = useState(() => Math.min(window.devicePixelRatio, 2));
+  
+  useFrame(() => {
+    const performanceLevel = gl.info.render.frame / 1000;
+    const newDpr = performanceLevel > 60 ? Math.min(2, dpr + 0.1) 
+                 : performanceLevel < 45 ? Math.max(1, dpr - 0.1) 
+                 : dpr;
+    if (newDpr !== dpr) {
+      gl.setPixelRatio(newDpr);
+      setDpr(newDpr);
+    }
+  });
+
+  return null;
+};
+
+const GroundPlane = () => (
+  <group position={[0, -4, 0]}>
+    {/* Сетка */}
+    <gridHelper
+      args={[50, 50, '#4a4a4a', '#2a2a2a']}
+      rotation={[-Math.PI/1, 0, 0]}
+      position={[0, 0.02, 0]}
+    />
+    {/* Плоскость с прозрачностью */}
+    <mesh 
+      rotation={[-Math.PI/2, 0, 0]} 
+      receiveShadow
+    >
+      <planeGeometry args={[50, 50]} />
+      <meshStandardMaterial 
+        color="#1a1a1a"
+        roughness={0.9}
+        metalness={0.1}
+        transparent
+        opacity={0.75}
+      />
+    </mesh>
+  </group>
+);
+
+const materialOptimization = (material) => {
+  // 1. Обновление материала принудительно
+  material.needsUpdate = true;
+  
+  // 2. Оптимизация параметров поверхности
+  material.roughness = Math.min(material.roughness, 0.8); // Ограничение шероховатости
+  material.metalness = Math.max(material.metalness, 0.1); // Гарантированная металличность
+
+  // 3. Оптимизация текстурных карт
+  if (material.map) {
+    material.map.generateMipmaps = true; // Генерация мипмап-уровней
+    material.map.minFilter = THREE.LinearMipmapLinearFilter; // Качественная фильтрация
+    material.map.anisotropy = 2; // Добавляем анизотропную фильтрацию
+  }
+
+  // 4. Отключение неиспользуемых функций
+  material.skinning = false;       // Для статических моделей
+  material.morphTargets = false;  // Без морфинга
+  material.morphNormals = false;   // Без изменения нормалей
+
+  // 5. Оптимизация для мобильных устройств
+  material.precision = 'mediump'; // Средняя точность вычислений
+};
+
+const ProductViewer = React.memo(({ modelPath, onCreated, onRotateStart, onRotateEnd }) => {
+  const [isInteracting, setIsInteracting] = useState(false);
+  
+  // Перенесем логику рендерера внутрь отдельного компонента
+  const RenderSetup = () => {
+    const { gl } = useThree();
+    
+    useEffect(() => {
+      gl.outputColorSpace = THREE.SRGBColorSpace;
+      gl.toneMapping = THREE.ACESFilmicToneMapping;
+      gl.toneMappingExposure = 1.0;
+    }, [gl]);
+    
+    return null;
+  };
+
+  // Добавляем предзагрузку для текущей модели
+  useEffect(() => {
+    if (modelPath && typeof modelPath === 'string') {
+      preloadModels([modelPath]);
+    } else {
+      console.warn('Invalid model path:', modelPath);
+    }
+  }, [modelPath]);
+
+  return (
+    <Canvas
+      shadows
+      gl={{ 
+        antialias: true,
+        powerPreference: "high-performance",
+        alpha: true
+      }}
+      camera={{
+        position: [1.8, 1, 1.8],
+        fov: 90,
+        near: 0.1,
+        far: 2000
+      }}
+    >
+      <RenderSetup />
+      <RenderOptimizer />
+      <ambientLight intensity={0.5} />
+      <directionalLight
+        position={[5, 5, 5]}
+        intensity={2}
+        castShadow
+        shadow-mapSize={2048}
+      />
+      <GroundPlane />
+      <Suspense fallback={<FallbackMaterial />}>
+        {modelPath ? (
+          <Model url={modelPath} onCreated={onCreated} />
+        ) : (
+          <Html center>No model loaded</Html>
+        )}
+      </Suspense>
+
+      <EffectComposer multisampling={0}>
+        <SMAA />
+      </EffectComposer>
+
+      <OrbitControls
+        enableDamping
+        dampingFactor={0.015}
+        autoRotate={!isInteracting}
+        minDistance={6}
+        maxDistance={8}
+        minPolarAngle={Math.PI/6}
+        maxPolarAngle={Math.PI/1.65}
+        target={[0, 0.25, 0]}
+        onStart={() => {
+          setIsInteracting(true);
+          onRotateStart?.();
+        }}
+        onEnd={() => {
+          setIsInteracting(false);
+          onRotateEnd?.();
+        }}
+      />
+    </Canvas>
+  );
+});
+
+export default ProductViewer;
+
+
+
+
+
+
+
+
+
+
+
+
+// utils/modelPreloader.js
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader';
+
+export const preloadModels = (modelPaths) => {
+  const validPaths = modelPaths.filter(path => {
+    if (typeof path !== 'string' || !path.includes('.glb')) {
+      console.error('Invalid model path:', path);
+      return false;
+    }
+    return true;
+  });
+
+  if (validPaths.length === 0) return;
+
+  const loader = new GLTFLoader();
+  validPaths.forEach(path => {
+    try {
+      loader.load(
+        path,
+        () => console.log('Model preloaded:', path),
+        undefined,
+        (error) => console.error('Preload error:', error)
+      );
+    } catch (e) {
+      console.error('Failed to preload model:', path, e);
+    }
+  });
+}; 
+
+
+
+
+
+
+
+// ProductModal.less
+:where(.product-modal-overlay) {
+  --modal-text-color: #ffffff !important;
+  --modal-primary-color: #ffffff !important;
+  --modal-border-color: rgba(255,255,255,0.15) !important;
+  --modal-color1: #C7B39B !important;
+  --modal-color2: #83653F !important;
+
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+  backdrop-filter: blur(10px);
+  overflow: hidden;
+  
+  .product-modal-content {
+    isolation: isolate;
+    position: relative;
+    background: var(--secondary-bg);
+    width: 95vw;
+    height: 95vh;
+    max-width: none;
+    border-radius: 30px;
+    display: flex;
+    overflow: hidden;
+    overscroll-behavior: contain;
+    
+    .modal-left-panel {
+      width: 40%;
+      padding: 0;
+      display: flex;
+      background: #83653F !important;
+      flex-direction: column;
+      justify-content: flex-start;
+      height: 100%;
+      
+      h1, .description, .order-button {
+        padding-left: 1rem;
+        color: var(--modal-primary-color) !important;
+        
+        @media (max-width: @screen-md) {
+          padding-left: 1rem;
+          margin-bottom: 1rem;
+        }
+      }
+      
+      .video-container {
+        border-radius: 8px 0 0 0;
+        overflow: hidden;
+        
+        video {
+          width: 100%;
+          height: 100%;
+          border-radius: 8px 0 0 0 !important;
+        }
+      }
+      
+      h1 {
+        font-size: 4.5rem;
+        // margin-top: 1rem;
+        margin-bottom: 1.5rem;
+        line-height: 1;
+        color: var(--modal-primary-color) !important;
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+        // padding-top: 2rem;
+        position: relative;
+        z-index: 3;
+        
+        .main-title {
+          position: relative;
+          padding-right: 1rem;
+          
+          &::after {
+            content: attr(data-subtitle);
+            position: absolute;
+            right: 0;
+            bottom: 0;
+            font-size: 60%;
+            opacity: 0.7;
+          }
+        }
+        
+        .subtitle {
+          font-size: 2rem;
+          color: var(--modal-text-color) !important;
+          font-weight: 300;
+          border-bottom: 2px solid var(--modal-color1) !important;
+          padding-bottom: 0.5rem;
+        }
+        
+        @media (max-width: @screen-xl) {
+          font-size: 4.5rem;
+          margin-top: 1.5rem;
+        }
+        
+        @media (max-width: @screen-md) {
+          font-size: 3.5rem;
+          margin-top: 1rem;
+        }
+      }
+      
+      .description {
+        // margin: 1rem 0 2rem;
+        // padding-right: 2rem;
+        font-size: 1.1rem;
+        line-height: 1.25;
+        color: var(--modal-text-color) !important;
+        flex-grow: 1;
+      }
+      
+      @media (max-width: @screen-xl) {
+        font-size: 1rem;
+        // margin: 0.5rem 0 1.5rem;
+      }
+      
+      .order-button {
+        height: 4rem !important;
+        width: auto !important;
+        padding: 0 2rem !important;
+        font-size: 1.4rem !important;
+        border-radius: 2rem !important;
+        transition: all 0.3s ease !important;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        text-transform: uppercase;
+        font-weight: 500;
+        letter-spacing: 0.5px;
+        cursor: pointer;
+        border: 2.5px solid var(--modal-color1) !important;
+        color: var(--modal-primary-color) !important;
+        background: transparent !important;
+        box-shadow: none !important;
+        margin: 1rem auto;
+        align-self: flex-start;
+        
+        &:hover {
+          transform: translateY(-2px);
+          background: #C7B39B !important;
+          border-color: rgb(255, 255, 255);
+        }
+        
+        &:active {
+          transform: scale(0.95);
+          background: rgba(255, 255, 255, 0.2) !important;
+        }
+        
+        @media (max-width: @screen-md) {
+          height: 3.5rem !important;
+          font-size: 1.2rem !important;
+          padding: 0 2rem !important;
+          width: 100% !important;
+          max-width: 100%;
+          order: 2;
+          margin: 1rem 0;
+        }
+        
+        @media (max-width: @screen-sm) {
+          height: 3rem !important;
+          font-size: 1rem !important;
+          padding: 0 1.5rem !important;
+        }
+      }
+      
+      .content-wrapper {
+        height: auto !important;
+        flex-grow: 1;
+        padding: 1rem;
+        overflow-y: auto;
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+      }
+    }
+    
+    .modal-right-panel {
+      width: 60%;
+      height: 100%;
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      
+      .model-viewer-controls {
+        position: absolute;
+        top: 1rem;
+        left: 1rem;
+        z-index: 1000;
+        width: auto;
+        
+        .upload-controls {
+          .upload-button {
+            background: var(--modal-color2) !important;
+            border-color: var(--modal-color1) !important;
+            color: #fff !important;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 8px 20px;
+            height: 40px;
+            border-radius: 25px !important;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            
+            &:hover {
+              transform: translateY(-1px);
+              background: darken(#C7B39B, 10%) !important;
+              border-color: darken(#C7B39B, 10%) !important;
+              box-shadow: 0 6px 16px rgba(0,0,0,0.2);
+            }
+          }
+        }
+      }
+      
+      .model-viewer-container {
+        padding: 0 !important;
+        width: 100% !important;
+        height: 65% !important;
+        min-height: 400px;
+        position: relative;
+        flex-shrink: 0;
+        transition: height 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94), opacity 0.2s ease;
+        
+        > div {
+          position: absolute !important;
+          top: 0 !important;
+          left: 0 !important;
+          right: 0 !important;
+          bottom: 0 !important;
+          width: 100% !important;
+          height: 100% !important;
+          min-height: 100% !important;
+        }
+        
+        canvas {
+          width: 100% !important;
+          height: 100% !important;
+          min-height: 60% !important;
+        }
+        
+        .loading-placeholder {
+          position: absolute;
+          top: 0;
+          left: 0;
+          width: 100%;
+          height: 100%;
+          background: rgba(255,255,255,0.1);
+          display: flex;
+          justify-content: center;
+          align-items: center;
+          z-index: 1;
+        }
+      }
+      
+      .images-scroll-container {
+        height: 35% !important;
+        min-height: 250px;
+        flex-grow: 1;
+        padding: 1rem;
+        overflow-y: auto;
+        scrollbar-width: thin;
+        scrollbar-color: #83653F transparent;
+        scroll-behavior: smooth;
+        transition: height 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+        position: relative;
+        
+        &::-webkit-scrollbar {
+          width: 8px;
+          height: 8px;
+          background-color: transparent;
+        }
+        
+        &::-webkit-scrollbar-thumb {
+          background-color: #83653F;
+          border-radius: 4px;
+        }
+        
+        &::-webkit-scrollbar-track {
+          background: rgba(0,0,0,0.1);
+          border-radius: 4px;
+        }
+        
+        // Для Firefox
+        @supports (-moz-appearance: none) {
+          scrollbar-color: #83653F transparent;
+        }
+        
+        .detail-image {
+          width: 100%;
+          height: auto;
+          object-fit: cover;
+          border-radius: 8px;
+          box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+        
+        .scroll-indicator {
+          position: absolute;
+          bottom: 15px;
+          left: 50%;
+          transform: translateX(-50%) translateY(20px);
+          background: rgba(0,0,0,0.7);
+          color: white;
+          padding: 8px 20px;
+          border-radius: 25px;
+          font-size: 0.9rem;
+          opacity: 0;
+          transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.15s linear;
+          z-index: 10;
+          pointer-events: none;
+          backdrop-filter: blur(4px);
+          box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          
+          &::after {
+            content: '↓';
+            font-size: 1.1em;
+            animation: bounce 1.5s infinite;
+          }
+
+          &.visible {
+            opacity: 1;
+            transform: translateX(-50%) translateY(0);
+          }
+
+          @keyframes bounce {
+            0%, 20%, 50%, 80%, 100% {
+              transform: translateY(0);
+            }
+            40% {
+              transform: translateY(-5px);
+            }
+            60% {
+              transform: translateY(-3px);
+            }
+          }
+
+          @media (max-width: @screen-md) {
+            bottom: 10px;
+            padding: 6px 15px;
+            font-size: 0.8rem;
+            
+            &::after {
+              font-size: 1em;
+            }
+          }
+        }
+      }
+    }
+    
+    .close-button {
+      position: absolute;
+      top: 1rem;
+      right: 1rem;
+      background: none;
+      border: none;
+      font-size: 2.5rem;
+      color: var(--modal-color1) !important;
+      cursor: pointer;
+      transition: opacity 0.3s;
+      z-index: 1000;
+      
+      &:hover {
+        opacity: 0.7;
+      }
+    }
+  }
+}
+
+@media (max-width: @screen-md) {
+  .product-modal-overlay {
+    padding: 1rem;
+    
+    .product-modal-content {
+      flex-direction: column;
+      width: 100vw;
+      height: 100vh;
+      border-radius: 0;
+      
+      .modal-left-panel,
+      .modal-right-panel {
+        width: 100% !important;
+        .model-viewer-container {
+          height: 50vh !important;
+          min-height: 300px;
+          transition: none !important;
+        }
+        
+        .images-scroll-container {
+          height: 30vh !important;
+          min-height: 200px;
+          transition: none !important;
+        }
+      }
+      
+      .modal-left-panel {
+        padding: 1.5rem;
+        order: 2;
+        min-height: 40vh;
+        
+        h1 {
+          position: static;
+          transform: none;
+          margin-bottom: 2rem;
+          font-size: 3rem;
+          .subtitle {
+            font-size: 1.5rem;
+          }
+        }
+        
+        .order-button {
+          height: 3.5rem;
+          font-size: 1.2rem;
+          margin: 1.5rem 0;
+        }
+      }
+      
+      .modal-right-panel {
+        order: 1;
+        height: 60vh;
+        
+        .model-viewer-container {
+          height: 40vh !important;
+          min-height: 300px;
+        }
+        
+        .images-scroll-container {
+          height: 20vh !important;
+          min-height: 200px;
+          
+          .detail-image {
+            height: 180px !important;
+            margin-bottom: 0.5rem;
+          }
+        }
+      }
+      
+      .modal-left-panel {
+        order: 2;
+        height: auto;
+        padding: 1rem;
+        
+        .video-container {
+          order: 3;
+          margin-top: 2rem;
+          
+          video {
+            border-radius: 8px !important;
+          }
+        }
+        
+        h1 {
+          font-size: 2.5rem !important;
+          margin-top: 0.5rem !important;
+        }
+        
+        .description {
+          font-size: 1rem !important;
+        }
+      }
+    }
+  }
+}
+
+@media (max-width: @screen-sm) {
+  .product-modal-overlay {
+    padding: 0.5rem;
+    
+    .product-modal-content {
+      .modal-left-panel {
+        padding: 1rem;
+        
+        h1 {
+          font-size: 2.2rem !important;
+          margin-top: 0.5rem;
+          margin-bottom: 1rem;
+          
+          .subtitle {
+            font-size: 1.2rem !important;
+            padding-bottom: 0.3rem;
+          }
+        }
+        
+        .description {
+          font-size: 1rem !important;
+          padding-right: 0 !important;
+          margin: 0.5rem 0 1rem;
+          line-height: 1.4;
+        }
+        
+        .content-wrapper {
+          padding: 0.5rem;
+          gap: 1rem;
+        }
+      }
+      
+      .modal-right-panel {
+        .model-viewer-container {
+          height: 45vh !important;
+          min-height: 250px;
+        }
+        
+        .images-scroll-container {
+          height: 25vh !important;
+          min-height: 150px;
+          padding: 1rem;
+          
+          .detail-image {
+            height: 200px !important;
+            margin-bottom: 0.5rem;
+          }
+        }
+      }
+      
+      .close-button {
+        top: 0.5rem;
+        right: 0.5rem;
+        font-size: 2rem;
+      }
+    }
+  }
+}
+
+@media (max-width: @screen-md) {
+  .images-scroll-container {
+    .scroll-indicator {
+      padding: 6px;
+      span {
+        font-size: 0.8rem;
+      }
+    }
+  }
+}
+
+.model-viewer-container {
+  transition: height 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+}
+
+.images-scroll-container {
+  transition: height 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+} 
+
+
+
+
+
+
+
+
+import React, { useEffect, useState, useRef, useCallback } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import * as antd from 'antd';
+import { lazyLoad } from '../utils/lazy-load';
+import VideoPreloader from './VideoPreloader';
+import '@styles/components/ProductModal.less';
+import { UploadOutlined } from '@ant-design/icons';
+import { Button } from 'antd';
+
+const VideoPlayer = lazyLoad(() => import('./VideoPlayer'));
+const ProductViewer = lazyLoad(() => import('./ProductViewer'));
+
+const ProductModal = ({ product, onClose }) => {
+  const titleParts = product.title.split(' ');
+  const mainTitle = titleParts[0];
+  const subtitle = titleParts.slice(1).join(' ');
+  const [isModelLoaded, setIsModelLoaded] = useState(false);
+  const [isModelExpanded, setIsModelExpanded] = useState(true);
+  const scrollTimeout = useRef(null);
+  const imagesContainerRef = useRef(null);
+  const [showScrollIndicator, setShowScrollIndicator] = useState(true);
+  const lastScrollPosition = useRef(0);
+  const [customModel, setCustomModel] = useState(null);
+  const fileInputRef = useRef(null);
+
+  useEffect(() => {
+    document.body.classList.add('modal-open');
+    return () => {
+      document.body.classList.remove('modal-open');
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => clearTimeout(scrollTimeout.current);
+  }, []);
+
+  const handleScroll = () => {
+    const container = imagesContainerRef.current;
+    const scrollTop = container.scrollTop;
+    
+    // Определяем направление скролла
+    const isScrollingDown = scrollTop > lastScrollPosition.current;
+    lastScrollPosition.current = scrollTop;
+    
+    // Показываем/скрываем индикатор
+    const atTop = scrollTop < 50;
+    setShowScrollIndicator(atTop);
+    
+    // Логика изменения размера модели
+    if (!isModelExpanded) return;
+    setIsModelExpanded(false);
+    clearTimeout(scrollTimeout.current);
+    scrollTimeout.current = setTimeout(() => {
+      if (container.scrollTop === 0) {
+        setIsModelExpanded(true);
+      }
+    }, 3000);
+  };
+
+  const handleRotateStart = () => {
+    clearTimeout(scrollTimeout.current);
+    setIsModelExpanded(true);
+    imagesContainerRef.current.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+  const handleRotateEnd = () => {
+    clearTimeout(scrollTimeout.current);
+    setIsModelExpanded(false);
+    imagesContainerRef.current.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  useEffect(() => {
+    const container = imagesContainerRef.current;
+    const checkPosition = () => {
+      setShowScrollIndicator(container.scrollTop < 50);
+    };
+    
+    container.addEventListener('scroll', checkPosition);
+    return () => container.removeEventListener('scroll', checkPosition);
+  }, []);
+
+  const handleModelUpload = useCallback((e) => {
+    const file = e.target.files[0];
+    if (file && /\.(glb|gltf)$/i.test(file.name)) {
+      if (file.size > 50 * 1024 * 1024) { // Лимит 50MB
+        antd.notification.error({
+          message: 'Ошибка загрузки',
+          description: 'Файл слишком большой. Максимальный размер: 50MB'
+        });
+        return;
+      }
+      
+      const modelUrl = URL.createObjectURL(file);
+      setCustomModel(modelUrl);
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (customModel) {
+        URL.revokeObjectURL(customModel);
+      }
+    };
+  }, [customModel]);
+
+  return (
+    <motion.div
+      className="product-modal-overlay"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <motion.div
+        className="product-modal-content"
+        initial={{ 
+          scale: 0.8, 
+          opacity: 0,
+          height: 0 // Начальное состояние высоты
+        }}
+        animate={{ 
+          scale: 0.9, 
+          opacity: 1,
+          height: "95vh" // Конечное состояние высоты
+        }}
+        exit={{ 
+          scale: 0.8, 
+          opacity: 0,
+          height: 0 // Анимация при закрытии
+        }}
+        transition={{ 
+          type: "spring", 
+          damping: 25, 
+          stiffness: 500,
+          height: { 
+            type: "tween",
+            duration: 0.45,
+            ease: "easeInOut"
+          }
+        }}
+      >
+        <div className="modal-left-panel">
+          <div className="video-container">
+            <React.Suspense fallback={<VideoPreloader />}>
+              <VideoPlayer
+                src={{
+                  mp4: '/videos/1_optimized.mp4',
+                  webm: '/videos/1.webm'
+                }}
+                style={{
+                  borderRadius: '8px'
+                }}
+              />
+            </React.Suspense>
+          </div>
+          
+          <div className="content-wrapper">
+            <h1>
+              <span className="main-title">{mainTitle}</span>
+              <span className="subtitle">{subtitle}</span>
+            </h1>
+            <p className="description">Таким образом начало повседневной работы по формированию позиции влечет за собой процесс внедрения и модернизации позиций, занимаемых участниками в отношении поставленных задач. Повседневная практика показывает, что постоянное информационно-пропагандистское обеспечение нашей деятельности в значительной степени обуславливает создание системы обучения кадров, соответствует насущным потребностям. Повседневная практика показывает, что сложившаяся структура организации влечет за собой процесс внедрения и модернизации соответствующий условий активизации.</p>
+            <antd.Button type="primary" size="large" className="order-button">
+              Оформить заказ
+            </antd.Button>
+          </div>
+        </div>
+        <div className="modal-right-panel">
+          <div 
+            className="images-scroll-container"
+            ref={imagesContainerRef}
+            onScroll={handleScroll}
+            style={{ height: isModelExpanded ? '35%' : '80%' }}
+          >
+            <div className="model-viewer-controls">
+            <div className="upload-controls">
+              <Button 
+                type="primary" 
+                icon={<UploadOutlined />}
+                onClick={() => fileInputRef.current.click()}
+                className="upload-button"
+              >
+                Загрузить модель
+              </Button>
+              <input
+                type="file"
+                ref={fileInputRef}
+                style={{ display: 'none' }}
+                onChange={handleModelUpload}
+                accept=".glb,.gltf"
+              />
+            </div>
+          </div>
+            <div className="model-viewer-container" style={{ height: isModelExpanded ? '65%' : '20%' }}>
+            <React.Suspense fallback={<div className="loading-placeholder">...</div>}>
+              <ProductViewer 
+                modelPath={customModel || product.defaultModel}
+                onCreated={() => setIsModelLoaded(true)}
+                onRotateStart={handleRotateStart}
+                onRotateEnd={handleRotateEnd}
+              />
+            </React.Suspense>
+          </div>
+            <div className={`scroll-indicator ${showScrollIndicator ? 'visible' : ''}`}>
+              <span>↓ Прокрутите вниз</span>
+            </div>
+            {[1, 2, 3].map((img) => (
+              <img 
+                key={img}
+                src={`/img/${img}.png`} 
+                alt={product.title}
+                className="detail-image"
+                // Оптимальный размер изображений: 1200x800px (соотношение 3:2)
+              />
+            ))}
+          </div>
+        </div>
+
+        <button className="close-button" onClick={onClose}>×</button>
+      </motion.div>
+    </motion.div>
+  );
+};
+
+export default ProductModal; 
+
+
+
+
+
+
+
+
+
+// App.jsx
+import React from 'react';
+import { BrowserRouter } from 'react-router-dom';
+import * as antd from 'antd';
+import NavBar from './components/NavBar';
+import AnimatedRoutes from './AnimatedRoutes';
+import ErrorBoundary from './components/ErrorBoundary';
+import { ThemeProvider } from './contexts/ThemeContext';
+import { AnimatePresence, motion } from 'framer-motion';
+import { Routes, Route } from 'react-router-dom';
+
+const { Header, Content, Footer } = antd.Layout;
+
+function App() {
+  return (
+    <ThemeProvider>
+      <BrowserRouter>
+        <antd.Layout>
+          <ErrorBoundary>
+            <Header style={{
+              backgroundColor: 'transparent',
+              padding: '0',
+              boxShadow: '0 2px 6px rgba(0,0,0,0.05)',
+              borderRadius: '0 0 10px 10px'
+            }}>
+              <NavBar />
+            </Header>
+            <Content style={{ minHeight: '80vh', padding: '24px 50px', marginTop: '25px' }}>
+              <AnimatedRoutes />
+            </Content>
+            <Footer style={{ 
+              textAlign: 'center', 
+              backgroundColor: 'var(--footer-bg)',
+              color: '#83653F',
+              marginTop: '20px',
+              transition: 'var(--theme-transition)'
+            }}>
+              sirKonovalov ©2025
+            </Footer>
+          </ErrorBoundary>
+        </antd.Layout>
+      </BrowserRouter>
+    </ThemeProvider>
+  );
+}
+
+export default App; 
+
+
+
+
+
+
+// AnimatedRoutes.jsx
+import React from 'react';
+import { Routes, Route, useLocation } from 'react-router-dom';
+import { AnimatePresence, motion } from 'framer-motion';
+
+import Home from './pages/HomePage';
+import Catalog from './pages/CatalogPage';
+import CustomOrderPage from './pages/CustomOrderPage';
+import MaterialsPage from './pages/MaterialsPage';
+// при желании импортировать и другие страницы
+
+const AnimatedRoutes = () => {
+  const location = useLocation();
+
+  return (
+    <AnimatePresence mode='wait'>
+      <Routes location={location} key={location.pathname}>
+        <Route
+          path="/"
+          element={
+            <motion.div
+              initial={{ opacity: 0, x: -50 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: 50 }}
+              transition={{ duration: 0.3 }}
+            >
+              <Home />
+            </motion.div>
+          }
+        />
+        <Route
+          path="/catalog"
+          element={
+            <motion.div
+              initial={{ opacity: 0, x: -50 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: 50 }}
+              transition={{ duration: 0.3 }}
+            >
+              <Catalog />
+            </motion.div>
+          }
+        />
+        <Route path="/order" element={<CustomOrderPage />} />
+        <Route path="/materials" element={<MaterialsPage />} />
+        {/* ...другие роуты */}
+      </Routes>
+    </AnimatePresence>
+  );
+};
+
+export default AnimatedRoutes; 
+
+
+
+
+
+
+
+
+// CubeModel.jsx
+import React, { Suspense, useMemo, useState, useRef, useEffect } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { Canvas, useThree, useFrame } from '@react-three/fiber';
+import { OrbitControls, Box, Grid, useGLTF, Html } from '@react-three/drei';
+import VideoPreloader from './VideoPreloader';
+import { EffectComposer, SMAA } from '@react-three/postprocessing';
+import * as THREE from 'three';
+
+const FallbackMaterial = () => {
+  return (
+    <meshStandardMaterial
+      attach="material"
+      color="#cccccc"
+      roughness={0.8}
+      metalness={0.2}
+    />
+  );
+};
+
+const Model = ({ url, onCreated }) => {
+  const { scene, materials } = useGLTF(url, {
+    useCache: true, // Используем кэш моделей
+    draco: true, // Включение Draco-компрессии
+  });
+
+  // Оптимизация сцены
+  const optimizedScene = useMemo(() => {
+    scene.traverse((child) => {
+      if (child.isMesh) {
+        // Оптимизация геометрии
+        child.geometry.computeVertexNormals();
+        child.geometry.computeBoundingSphere();
+        
+        // Оптимизация материала
+        child.material = new THREE.MeshStandardMaterial({
+          color: child.material.color,
+          map: child.material.map,
+          normalMap: child.material.normalMap,
+          roughness: 0.5,
+          metalness: 0.2,
+          transparent: child.material.transparent,
+          opacity: child.material.opacity
+        });
+        
+        // Оптимизация теней
+        child.castShadow = true;
+        child.receiveShadow = true;
+        child.material.needsUpdate = true;
+      }
+    });
+    return scene;
+  }, [scene]);
+
+  useEffect(() => {
+    onCreated?.();
+  }, [onCreated]);
+
+  return <primitive object={optimizedScene} dispose={null} scale={0.01} />;
+};
+
+const useFpsMonitor = () => {
+  const [fps, setFps] = useState(60);
+  const lastCalled = useRef(performance.now());
+  const frameCount = useRef(0);
+
+  useEffect(() => {
+    const calculateFps = () => {
+      const now = performance.now();
+      frameCount.current++;
+      
+      if (now - lastCalled.current >= 1000) {
+        setFps(frameCount.current);
+        frameCount.current = 0;
+        lastCalled.current = now;
+      }
+      requestAnimationFrame(calculateFps);
+    };
+    
+    calculateFps();
+  }, []);
+
+  return fps;
+};
+
+const RenderOptimizer = () => {
+  const [dpr, setDpr] = useState(() => Math.min(window.devicePixelRatio, 2));
+  const fps = useFpsMonitor();
+  const { gl } = useThree();
+
+  useFrame(() => {
+    if (fps < 45) {
+      const newDpr = Math.max(0.75, dpr - 0.25);
+      gl.setPixelRatio(newDpr);
+      setDpr(newDpr);
+    } else if (fps > 55) {
+      const newDpr = Math.min(2, dpr + 0.25);
+      gl.setPixelRatio(newDpr);
+      setDpr(newDpr);
+    }
+  });
+
+  return null;
+};
+
+const ProductViewer = React.memo(({ modelPath, onCreated, onRotateStart, onRotateEnd }) => {
+  const [isInteracting, setIsInteracting] = useState(false);
+
+  return (
+    <Canvas
+      shadows
+      gl={{
+        antialias: true,
+        powerPreference: "high-performance",
+        alpha: true
+      }}
+      camera={{
+        position: [0, 0, 2.5],
+        fov: 45,
+        near: 0.1,
+        far: 1000
+      }}
+    >
+      <RenderOptimizer />
+      <ambientLight intensity={0.5} />
+      <directionalLight
+        position={[5, 5, 5]}
+        intensity={1}
+        castShadow
+        shadow-mapSize-width={2048}
+        shadow-mapSize-height={2048}
+      />
+      
+      <Suspense fallback={<FallbackMaterial />}>
+        <Model url={modelPath} onCreated={onCreated} />
+      </Suspense>
+
+      <EffectComposer multisampling={0}>
+        <SMAA />
+      </EffectComposer>
+
+      <OrbitControls
+        enableDamping
+        dampingFactor={0.05}
+        autoRotate={!isInteracting}
+        minDistance={1}
+        maxDistance={5}
+        onStart={() => {
+          setIsInteracting(true);
+          onRotateStart?.();
+        }}
+        onEnd={() => {
+          setIsInteracting(false);
+          onRotateEnd?.();
+        }}
+      />
+    </Canvas>
+  );
+});
+
+const CubeModel = ({ onRotateStart, onRotateEnd, autoRotate }) => {
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = React.useState(null);
+  const controlsRef = useRef();
+  const containerRef = useRef(null);
+
+  useEffect(() => {
+    const controls = controlsRef.current;
+    if (!controls) return;
+
+    const handleEnd = () => {
+      controls.autoRotate = true;
+      controls.autoRotateSpeed = 0.5;
+      setTimeout(() => {
+        controls.autoRotateSpeed = 1;
+      }, 1000);
+    };
+
+    controls.addEventListener('end', handleEnd);
+    return () => controls.removeEventListener('end', handleEnd);
+  }, []);
+
+  useEffect(() => {
+    const controls = controlsRef.current;
+    if (!controls) return;
+
+    if (autoRotate) {
+      controls.autoRotate = true;
+      controls.autoRotateSpeed = 0.5;
+    } else {
+      controls.autoRotate = false;
+    }
+  }, [autoRotate]);
+
+  if (error) {
+    return (
+      <div className="error-fallback">
+        Ошибка загрузки: {error}
+      </div>
+    );
+  }
+
+  return (
+    <div className="cube-container"
+      ref={containerRef} 
+      style={{ 
+        width: '100%',
+        height: '100%',
+        position: 'relative',
+        overflow: 'hidden'
+      }}
+    >
+      <AnimatePresence>
+        {isLoading && (
+          <motion.div
+            initial={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="preloader-overlay"
+          >
+            <VideoPreloader />
+          </motion.div>
+        )}
+      </AnimatePresence>
+      
+      <Canvas
+        onCreated={() => setIsLoading(false)}
+        camera={{ 
+          position: [4, 4, 4],
+          fov: 45,
+          near: 0.1,
+          far: 1000 
+        }}
+        frameloop="always"
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          width: '100%',
+          height: '100%',
+          touchAction: 'none'
+        }}
+      >
+        <ambientLight intensity={0.5} />
+        <pointLight position={[10, 10, 10]} intensity={1} />
+        
+        <Grid
+          position={[0, -1, 0]}
+          args={[10, 10]}
+          cellColor="#6f6f6f"
+          sectionColor="#4a4a4a"
+          fadeDistance={30}
+          fadeStrength={1}
+        />
+        
+        <Box args={[2, 2, 2]}>
+          <meshStandardMaterial 
+            color="#ffffff"
+            roughness={0.5}
+            metalness={0.3}
+            emissive="#000000"
+            emissiveIntensity={0.1}
+          />
+        </Box>
+        
+        <OrbitControls 
+          ref={controlsRef}
+          enableZoom={true}
+          enablePan={true}
+          touchAction="pan-y"
+          maxDistance={8}
+          minDistance={4}
+          minPolarAngle={Math.PI / 3}
+          maxPolarAngle={Math.PI / 2}
+          autoRotate
+          autoRotateSpeed={2}
+          onStart={() => {
+            onRotateStart();
+            document.body.style.cursor = 'grabbing';
+            controlsRef.current.autoRotate = false;
+          }}
+          onEnd={() => {
+            onRotateEnd();
+            document.body.style.cursor = 'default';
+            controlsRef.current.autoRotate = true;
+          }}
+        />
+      </Canvas>
+    </div>
+  );
+};
+
+export default CubeModel;
+
+
+
+
+
+
+  //src/components/ProductCard.jsx
+  import React, { useState, useEffect } from 'react';
+  import { motion, AnimatePresence } from 'framer-motion';
+  import * as antd from 'antd';
+  import { lazyLoad } from '../utils/lazy-load';
+  import PropTypes from 'prop-types';
+  import '@styles/components/ProductCard.less';
+  
+  const ProductViewer = lazyLoad(() => import('./CubeModel'));
+  const ProductModal = lazyLoad(() => import('./ProductModal'));
+  
+  const ProductCard = ({ product }) => {
+    const [isActive, setIsActive] = useState(false);
+    const [isMounted, setIsMounted] = useState(false);
+    const [isExpanded, setIsExpanded] = useState(false);
+    const [isInteracting, setIsInteracting] = useState(false);
+    const [showOverlay, setShowOverlay] = useState(false);
+  
+    useEffect(() => {
+      setIsMounted(true);
+      return () => setIsMounted(false);
+    }, []);
+  
+    const handleRotateStart = () => {
+      if (isMounted) {
+        setIsActive(true);
+        setIsInteracting(false);
+      }
+    };
+  
+    const handleRotateEnd = () => {
+      if (isMounted) {
+        setIsActive(false);
+        setIsInteracting(true);
+        setTimeout(() => setShowOverlay(true), 300);
+      }
+    };
+  
+    const handleCardClick = () => {
+      if (!isInteracting) {
+        setIsExpanded(false);
+      }
+    };
+  
+    const handleOpenModal = () => {
+      setShowOverlay(false);
+      setIsExpanded(true);
+    };
+  
+    return (
+      <>
+        <motion.div
+          className="product-card"
+          initial={false}
+          animate={isActive ? 'active' : 'inactive'}
+          variants={{
+            active: { scale: 1.1, zIndex: 1 },
+            inactive: { scale: 1, zIndex: 0 }
+          }}
+          transition={{ type: "spring", stiffness: 250, damping: 15 }}
+          onClick={handleCardClick}
+        >
+          <antd.Card
+            hoverable
+            className="product-card-inner"
+            cover={
+              <div className="product-viewer-container">
+                <React.Suspense fallback={<div className="loading-placeholder" />}>
+                  <ProductViewer 
+                    onRotateStart={handleRotateStart}
+                    onRotateEnd={handleRotateEnd}
+                  />
+                </React.Suspense>
+                <AnimatePresence>
+                  {showOverlay && (
+                    <motion.div
+                      className="viewer-overlay"
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      exit={{ opacity: 0 }}
+                      transition={{ duration: 0.3 }}
+                    >
+                      <motion.div
+                        className="open-button-container"
+                        initial={{ scale: 0.8 }}
+                        animate={{ scale: 1 }}
+                      //   transition={{ type: "spring", delay: 0.2 }}
+                      >
+                        <antd.Button
+                          type="primary"
+                          shape="round"
+                          size="large"
+                          onClick={handleOpenModal}
+                        >
+                          Открыть детали
+                        </antd.Button>
+                      </motion.div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+            }
+          >
+            <antd.Card.Meta
+              title={product.title}
+              description={product.description}
+            />
+            <div className="product-price">
+              {product.price.toLocaleString('ru-RU')} ₽
+            </div>
+          </antd.Card>
+        </motion.div>
+  
+        <AnimatePresence>
+          {isExpanded && (
+            <ProductModal 
+              product={product}
+              onClose={() => setIsExpanded(false)}
+            />
+          )}
+        </AnimatePresence>
+      </>
+    );
+  };
+  
+  ProductCard.propTypes = {
+    product: PropTypes.shape({
+      id: PropTypes.number.isRequired,
+      title: PropTypes.string.isRequired,
+      description: PropTypes.string.isRequired,
+      price: PropTypes.number.isRequired
+    }).isRequired
+  };
+  
+  export default ProductCard;
+
+
+
+
+
+
+
+
+  // pages/CatalogPage.jsx
+import React from 'react';
+import { motion } from 'framer-motion';
+import * as antd from 'antd';
+import ProductCard from '../components/ProductCard';
+import '@styles/pages/CatalogPage.less';
+
+const products = [
+  {
+    id: 1,
+    title: 'Косуха',
+    description: 'Классический портфель из итальянской кожи с отделением для ноутбука',
+    price: 45000
+  },
+  {
+    id: 2,
+    title: 'Кожаная куртка',
+    description: 'Стильная сумка через плечо из натуральной кожи. Водоотталкивающая пропитка.',
+    price: 28000
+  },
+  {
+    id: 3,
+    title: 'Кожаный тренч',
+    description: 'Вместительная дорожная сумка из премиальной кожи с прочной фурнитурой',
+    price: 52000
+  }
+];
+
+function CatalogPage() {
+  return (
+    <motion.div
+      className="catalog-page"
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.5 }}
+    >
+      <div className="catalog-header">
+        <h1>Каталог изделий</h1>
+        <p className="centered-description">Эксклюзивные кожаные изделия ручной работы</p>
+      </div>
+      
+      <div className="catalog-grid">
+        {products.map(product => (
+          <ProductCard 
+            key={product.id} 
+            product={product} 
+          />
+        ))}
+      </div>
+    </motion.div>
+  );
+}
+
+export default CatalogPage; 
+
+
+
+
+
+
+
+
+
+// utils/lazy-load.jsx
+import React from 'react';
+
+export const lazyLoad = (componentImport) => {
+  const LazyComponent = React.lazy(() => componentImport()
+    .catch((error) => {
+      console.error('Component load failed:', error);
+      return { 
+        default: () => (
+          <div className="error-placeholder">
+            Не удалось загрузить компонент
+          </div>
+        )
+      };
+    })
+  );
+  
+  return React.memo((props) => (
+    <React.Suspense fallback={<div className="loading-placeholder" />}>
+      <LazyComponent {...props} />
+    </React.Suspense>
+  ));
+}; 
+
+
+
+
+
+
+
+
+
+
+//src/pages/MaterialsPage.jsx
+import React, { useState } from 'react';
+import { motion } from 'framer-motion';
+import * as antd from 'antd';
+import '@styles/pages/MaterialsPage.less';
+import { useTheme } from '../contexts/ThemeContext';
+
+const materials = [
+  { 
+    id: 1,
+    title: 'Итальянская телячья кожа',
+    description: 'Мягкая эластичная кожа с натуральной текстурой. Идеально подходит для создания классических изделий с безупречным внешним видом.',
+    image: '/img/1.png',
+    features: ['Натуральная текстура', 'Высокая прочность', 'Долговечность']
+  },
+  { 
+    id: 2,
+    title: 'Кожа рептилий',
+    description: 'Экзотическая фактура для уникальных изделий. Каждое изделие становится неповторимым благодаря природному рисунку.',
+    image: '/img/2.png',
+    features: ['Уникальный узор', 'Премиальный вид', 'Особая прочность']
+  },
+  {
+    id: 3,
+    title: 'Итальянская фурнитура',
+    description: 'Высококачественные металлические элементы от лучших итальянских производителей.',
+    image: '/img/3.png',
+    features: ['Надёжность', 'Элегантный дизайн', 'Долговечность']
+  }
+];
+
+const Card = ({ title, image, description, tags }) => {
+  const [isActive, setIsActive] = useState(false);
+
+  const handleCardClick = () => {
+    setIsActive(!isActive);
+  };
+
+  return (
+    <div className={`material-card ${isActive ? 'active' : ''}`}>
+      <div 
+        className="ant-card-cover"
+        onClick={handleCardClick}
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => e.key === 'Enter' && handleCardClick()}
+      >
+        <img 
+          src={image} 
+          alt={title}
+          style={{ cursor: 'pointer' }}
+        />
+        <div className={`card-title-overlay ${isActive ? 'active' : ''}`}>
+          <h3 className="card-title">{title}</h3>
+        </div>
+      </div>
+      
+      <motion.div 
+        className="card-content"
+        initial={false}
+        animate={isActive ? 'open' : 'collapsed'}
+        variants={{
+          open: { 
+            opacity: 1,
+            height: "auto",
+            transition: { 
+              type: "spring",
+              stiffness: 150,
+              damping: 20,
+              duration: 0.5
+            }
+          },
+          collapsed: { 
+            opacity: 0,
+            height: 0,
+            transition: { 
+              type: "spring",
+              stiffness: 200,
+              damping: 25,
+              when: "afterChildren"
+            }
+          }
+        }}
+      >
+        <div className="ant-card-body">
+          <motion.p 
+            className="ant-card-meta-description"
+            initial={{ y: -10, opacity: 0 }}
+            animate={isActive ? { y: 0, opacity: 1 } : {}}
+            transition={{ 
+              type: "spring",
+              stiffness: 120,
+              damping: 15,
+              delay: isActive ? 0.1 : 0
+            }}
+          >
+            {description}
+          </motion.p>
+          <motion.div 
+            className="features-list"
+            initial={{ y: 10, opacity: 0 }}
+            animate={isActive ? { y: 0, opacity: 1 } : {}}
+            transition={{ 
+              type: "spring",
+              stiffness: 100,
+              damping: 12,
+              delay: isActive ? 0.2 : 0
+            }}
+          >
+            {tags.map((tag, index) => (
+              <motion.span 
+                key={index} 
+                className="feature-tag"
+                initial={{ scale: 0 }}
+                animate={{ scale: 1 }}
+                transition={{ 
+                  type: "spring",
+                  stiffness: 150,
+                  damping: 10,
+                  delay: isActive ? index * 0.05 : 0
+                }}
+              >
+                {tag}
+              </motion.span>
+            ))}
+          </motion.div>
+        </div>
+      </motion.div>
+    </div>
+  );
+};
+
+function MaterialsPage() {
+  const { theme } = useTheme();
+
+  return (
+    <motion.div
+      className={`materials-page ${theme}`}
+      initial={{ opacity: 0, y: 50 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -50 }}
+      transition={{ duration: 0.3, ease: "easeInOut", type: "spring" }}
+      data-theme={theme}
+    >
+      <div className="materials-header">
+        <h1>Премиальные материалы</h1>
+        <p>Мы тщательно отбираем лучшие материалы для наших изделий</p>
+      </div>
+      
+      <div className="materials-grid">
+        {materials.map(material => (
+          <motion.div
+            key={material.id}
+            initial={{ opacity: 0, y: 20 }}
+            whileInView={{ opacity: 1, y: 0 }}
+            viewport={{ once: true, margin: "-20%" }}
+            transition={{ duration: 0.3, ease: "easeInOut", type: "spring" }}
+          >
+            <Card
+              title={material.title}
+              image={material.image}
+              description={material.description}
+              tags={material.features}
+            />
+          </motion.div>
+        ))}
+      </div>
+    </motion.div>
+  );
+}
+
+export default MaterialsPage; 
+
+
+
+
+
+
+
+
+// MaterialsPage.less
+.materials-page {
+  padding: 1rem;
+  border-radius: 1rem;
+  max-width: 1600px;
+  margin: 0 auto;
+  
+  // CSS переменные
+  --text-primary: var(--primary-color);
+  --text-secondary: var(--text-color);
+  --bg-primary: var(--page-bg);
+  --card-bg: var(--secondary-bg);
+  --feature-tag-bg: var(--background-color-light);
+  --feature-tag-color: var(--text-color);
+  --overlay-gradient: linear-gradient(transparent, rgba(0,0,0,0.9));
+  --card-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  --active-card-shadow: 0 15px 30px rgba(0,0,0,0.55);
+  --card-title-color: #2d3748;
+  --title-shadow-color: rgba(0,0,0,0.2);
+
+  .materials-header {
+    text-align: center;
+    margin-bottom: 40px;
+    
+    h1 {
+      font-size: 2.5rem;
+      color: var(--text-primary);
+      margin-bottom: 1rem;
+      transition: color 0.3s var(--theme-transition, ease-in-out);
+    }
+    
+    p {
+      font-size: 1.1rem;
+      color: var(--text-secondary);
+      max-width: 600px;
+      margin: 0 auto;
+      transition: color 0.3s var(--theme-transition, ease-in-out);
+    }
+  }
+
+  .materials-grid {
+    height: 100%;
+    width: auto;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 2rem;
+    // padding: 0 2rem;
+  }
+
+  .material-card {
+    background: var(--card-bg);
+    border-radius: 20px;
+    overflow: visible;
+    transition: transform 0.5s var(--ease-in-out), 
+                box-shadow 0.5s var(--ease-out-back),
+                opacity 0.3s var(--ease-in-out);
+    transform-origin: center;
+    will-change: transform;
+    position: relative;
+    z-index: 1;
+    box-shadow: var(--card-shadow);
+    
+  
+    &:hover {
+      transform: translateY(-8px) scale(1.02);
+      box-shadow: var(--active-card-shadow);
+      transition-duration: 0.4s;
+      transition-timing-function: var(--ease-in-out);
+    }
+
+    &.active {
+      transition-duration: 0.4s;
+      transition-timing-function: var(--ease-in-out);
+    }
+
+    &:not(.active) {
+      transition-duration: 0.4s;
+      transition-timing-function: var(--ease-in-out);
+    }
+
+    .ant-card-cover {
+      position: relative;
+      height: 250px;
+      border-radius: 20px;
+      overflow: hidden;
+      cursor: pointer;
+
+      img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        transition: transform 0.5s var(--ease-in-out);
+      }
+    }
+
+    .card-title-overlay {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      background: var(--overlay-gradient);
+      padding: 1rem;
+      z-index: 2;
+      transition: all 0.3s var(--ease-in-out);
+      display: flex;
+      align-items: flex-end;
+      min-height: 50%;
+
+      .card-title {
+        color: var(--card-title-color);
+        font-size: 1.2rem;
+        margin: 0;
+        transition: transform 0.3s var(--ease-in-out);
+        text-shadow: 0 2px 4px var(--title-shadow-color);
+      }
+
+      &:hover .card-title {
+        transform: translateY(0);
+      }
+
+      &.active .card-title {
+        transform: translateY(0);
+        opacity: 0.9;
+      }
+    }
+
+    .card-content {
+      overflow: hidden;
+      background: var(--card-bg);
+      transition: background 0.3s var(ease-in-out);
+      border-radius: 0 0 20px 20px;
+      
+      .ant-card-body {
+        padding: 1.5rem;
+        background: var(--card-bg);
+        border-radius: 0 0 20px 20px;
+      }
+
+      .ant-card-meta-description {
+        color: var(--text-secondary);
+        line-height: 1.6;
+        margin-bottom: 1rem;
+      }
+
+      .features-list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+
+        .feature-tag {
+          background: var(--feature-tag-bg);
+          transition: background 0.3s var(--ease-in-out);
+          color: var(--feature-tag-color);
+          padding: 4px 12px;
+          border-radius: 20px;
+          font-size: 0.9rem;
+        }
+      }
+    }
+  }
+}
+
+// Темная тема
+[data-theme='dark'] {
+  .materials-page {
+    --text-primary: #f8f9fa;
+    --text-secondary: #e2e8f0;
+    --card-bg: #2d2d2d;
+    --overlay-gradient: linear-gradient(transparent, rgba(0,0,0,0.8));
+    --feature-tag-bg: #83653F;
+    --feature-tag-color: #fff;
+    --card-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    --active-card-shadow: 0 15px 30px rgba(0,0,0,0.5);
+    --title-shadow-color: rgba(0,0,0,0.7);
+    --card-title-color: #f8f9fa;
+
+    .card-title-overlay {
+      background: linear-gradient(transparent, rgba(0,0,0,0.8));
+      transition: background 0.3s var(--ease-in-out);
+    }
+  }
+}
+
+// Светлая тема
+[data-theme='light'] {
+  .materials-page {
+    --title-shadow-color: rgba(255, 255, 255, 0.2);
+    --card-title-color: #fff;
+    --feature-tag-bg: #83653F;
+    --feature-tag-color: #fff;
+  }
+}
+
+// Адаптив
+@media (max-width: @screen-sm) {
+  .materials-page {
+    min-height: 80vh;
+    padding: 1rem;
+
+    .materials-header {
+      margin-bottom: 2rem;
+      
+      h1 {
+        font-size: 2rem;
+      }
+      
+      p {
+        font-size: 1rem;
+      }
+    }
+
+    .material-card {
+      .ant-card-cover {
+        height: 200px;
+        width: auto;
+      }
+
+      .card-title-overlay .card-title {
+        font-size: 1rem;
+      }
+
+      .card-content .ant-card-body {
+        padding: 1rem;
+      }
+    }
+  }
+}
+
+// Добавляем глобальные настройки анимаций
+[data-theme] {
+  transition: background 0.6s var(--ease-in-out), 
+              color 0.6s var(--ease-in-out);
+}
